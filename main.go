@@ -2,15 +2,26 @@ package main
 
 import (
 	"bufio"
-	"fmt"
+	"encoding/json"
 	"net"
+	"net/http"
 	"slices"
+	"strconv"
 )
 
 func main() {
 	// check dante version
 	// check dante service file
 	// check dante config file
+
+	users := make(map[string]int64)
+
+	go func() {
+		panic(http.ListenAndServe(":9090", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(users)
+		})))
+	}()
+
 	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
 		panic(err)
@@ -34,7 +45,7 @@ func main() {
 		if atIndex < 0 {
 			continue
 		}
-		username := bytes[percentIndex:atIndex]
+		username := bytes[percentIndex+1 : atIndex]
 		openParenIndex := slices.Index(bytes[atIndex:], '(') + atIndex
 		if openParenIndex < 0 {
 			continue
@@ -43,7 +54,15 @@ func main() {
 		if closeParenIndex < 0 {
 			continue
 		}
-		count := bytes[openParenIndex:closeParenIndex]
-		fmt.Printf("%s -> %s bytes\n", username, count)
+		count := bytes[openParenIndex+1 : closeParenIndex]
+		countInt, err := strconv.ParseInt(string(count), 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		if _, ok := users[string(username)]; ok {
+			users[string(username)] += countInt
+		} else {
+			users[string(username)] = countInt
+		}
 	}
 }
