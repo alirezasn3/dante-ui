@@ -34,6 +34,7 @@ func main() {
 		if atIndex < 0 {
 			continue
 		}
+		username := bytes[percentIndex : percentIndex+atIndex]
 		openParenIndex := slices.Index(bytes[atIndex:], '(')
 		if openParenIndex < 0 {
 			continue
@@ -42,6 +43,7 @@ func main() {
 		if closeParenIndex < 0 {
 			continue
 		}
-		fmt.Printf("%s -> %s bytes\n", bytes[percentIndex:atIndex], bytes[openParenIndex:closeParenIndex])
+		count := bytes[percentIndex+atIndex+openParenIndex : percentIndex+atIndex+openParenIndex+closeParenIndex]
+		fmt.Printf("%s -> %s bytes\n", username, count)
 	}
 }
