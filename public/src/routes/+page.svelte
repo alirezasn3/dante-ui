@@ -23,7 +23,7 @@
 	onMount(async () => {
 		try {
 			while (true) {
-				const res = await fetch('http://87.236.215.219:10800/api/users');
+				const res = await fetch('/api/users');
 				const data = await res.json();
 				console.log(data);
 				users = data;
