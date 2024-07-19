@@ -1,0 +1,14 @@
+[Unit]
+Description=dante-ui
+After=syslog.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+PIDFile=/run/dante-ui.pid
+ExecStart=/root/dante-ui/dante-ui
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
-	let users = {};
+	let users: User[] = [];
+
+	interface User {
+		username: string;
+		totalUsage: number;
+		allowedUsage: number;
+		expiresAt: number;
+		disabled: boolean;
+	}
 
 	const formatBytes = (totalBytes: number, space = true) => {
 		if (!totalBytes) return `00.00${space ? ' ' : ''}KB`;
@@ -24,24 +32,39 @@
 		try {
 			while (true) {
 				const res = await fetch('/api/users');
-				const data = await res.json();
-				console.log(data);
-				users = data;
+				const data: { string: User } = await res.json();
+				users = Object.values(data);
 				await sleep(1000);
 			}
 		} catch (error) {
 			console.log(error);
 		}
 	});
+
+	async function deleteUser(username: string) {
+		try {
+			if (window.confirm(`Delete ${username}?`)) {
+				const res = await fetch('/api/users', {
+					method: 'DELETE',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ username })
+				});
+				console.log(res.status);
+			}
+		} catch (error) {
+			console.log(error);
+		}
+	}
 </script>
 
-<div class="bg-neutral-950 text-neutral-50 min-h-svh w-full p-4">
-	<!-- svelte-ignore empty-block -->
-	{#each Object.entries(users) as entries}
+<div class="min-h-svh w-full p-4">
+	{#each users as user}
 		<div class="flex rounded border border-neutral-800 my-4 px-4 py-2">
-			<div>{entries[0]}</div>
-			:
-			<div>{formatBytes(Number(entries[1]))}</div>
+			<div>{user.username}</div>
+			<div class="mx-1">:</div>
+			<div>{formatBytes(user.totalUsage)}</div>
+			<div class="ml-1">{user.expiresAt}</div>
+			<button class="ml-auto" on:click={() => deleteUser(user.username)}>DELETE</button>
 		</div>
 	{/each}
 </div>
