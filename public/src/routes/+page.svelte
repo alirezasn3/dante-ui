@@ -1,14 +1,18 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
+	let currentUser: User | null = null;
 	let users: User[] = [];
+	let publicAddress = '';
+	let editing = false;
 
 	interface User {
 		username: string;
+		password: string;
 		totalUsage: number;
 		allowedUsage: number;
 		expiresAt: number;
-		disabled: boolean;
+		locked: boolean;
 	}
 
 	const formatBytes = (totalBytes: number, space = true) => {
@@ -26,14 +30,34 @@
 		return `${totalTeras < 10 ? '0' : ''}${totalTeras.toFixed(2)}${space ? ' ' : ''}TB`;
 	};
 
+	const formatExpiry = (expiresAt: number, noPrefix = false) => {
+		if (!expiresAt) return 'unknown';
+		let totalSeconds = Math.trunc(expiresAt - Date.now() / 1000);
+		const prefix = totalSeconds < 0 && !noPrefix ? '-' : '';
+		totalSeconds = Math.abs(totalSeconds);
+		if (totalSeconds / 60 < 1) return `${prefix}${totalSeconds} seconds`;
+		const totalMinutes = Math.trunc(totalSeconds / 60);
+		if (totalMinutes / 60 < 1) return `${prefix}${totalMinutes} minutes`;
+		const totalHours = Math.trunc(totalMinutes / 60);
+		if (totalHours / 24 < 1) return `${prefix}${totalHours} hours`;
+		return `${prefix}${Math.trunc(totalHours / 24)} days`;
+	};
+
 	const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 	onMount(async () => {
 		try {
+			const publicAddressRes = await fetch('/api/public-address');
+			publicAddress = await publicAddressRes.text();
 			while (true) {
-				const res = await fetch('/api/users');
-				const data: { string: User } = await res.json();
-				users = Object.values(data);
+				if (currentUser === null) {
+					const res = await fetch('/api/users');
+					const data: { string: User } = await res.json();
+					users = Object.values(data);
+				} else {
+					const res = await fetch('/api/users/' + currentUser.username);
+					currentUser = await res.json();
+				}
 				await sleep(1000);
 			}
 		} catch (error) {
@@ -55,16 +79,72 @@
 			console.log(error);
 		}
 	}
+
+	async function editUser(
+		expiresAt: number | undefined,
+		allowedUsage: number | undefined,
+		totalUsage: number | undefined
+	) {
+		try {
+			const res = await fetch('/api/users', {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ expiresAt, allowedUsage, totalUsage })
+			});
+			console.log(res.status);
+		} catch (error) {
+			console.log(error);
+		}
+	}
 </script>
 
 <div class="min-h-svh w-full p-4">
-	{#each users as user}
-		<div class="flex rounded border border-neutral-800 my-4 px-4 py-2">
-			<div>{user.username}</div>
-			<div class="mx-1">:</div>
-			<div>{formatBytes(user.totalUsage)}</div>
-			<div class="ml-1">{user.expiresAt}</div>
-			<button class="ml-auto" on:click={() => deleteUser(user.username)}>DELETE</button>
+	{#if currentUser !== null}
+		<div class="text-lg w-full flex flex-col h-full bg-neutral-950 absolute top-0 left-0 p-4">
+			{#if editing}
+				<div>
+					<input type="text" placeholder="Allowed Usage (GB)" />
+					<input type="text" placeholder="Expires At (Days)" />
+				</div>
+			{:else}
+				<div>{currentUser.username}</div>
+				<div>{formatBytes(currentUser.totalUsage)}/{formatBytes(currentUser.allowedUsage)}</div>
+				<div>{formatExpiry(currentUser.expiresAt)}</div>
+				<div>{currentUser.locked ? 'locked' : 'not locked'}</div>
+				<div>
+					socks://{btoa(
+						currentUser.username + ':' + currentUser.password
+					)}@{publicAddress}#{currentUser.username}
+				</div>
+				<div class="flex items-center mt-4">
+					<button
+						class="px-4 py-2 mr-4 border border-neutral-800 rounded"
+						on:click={() => (currentUser = null)}>BACK</button
+					>
+					<button
+						class="px-4 py-2 border border-neutral-800 rounded"
+						on:click={() => deleteUser(currentUser?.username || '')}>DELETE</button
+					>
+				</div>
+			{/if}
+		</div>
+	{/if}
+	{#each users as user, i}
+		<div
+			class="grid grid-cols-3 rounded border border-neutral-800 px-4 py-2 mb-4 {user.locked &&
+				'bg-red-500'}"
+		>
+			<div class="flex items-center">#{i + 1} {user.username}</div>
+			<div class="flex">
+				<div class="border-r border-neutral-800 pr-2 mr-2">
+					{formatBytes(user.totalUsage)}/{formatBytes(user.allowedUsage)}
+				</div>
+				<div>{formatExpiry(user.expiresAt)}</div>
+			</div>
+			<div class="flex items-center justify-end">
+				<button on:click={() => (currentUser = user)}>DETAILS</button>
+				<button class="ml-4" on:click={() => deleteUser(user.username)}>DELETE</button>
+			</div>
 		</div>
 	{/each}
 </div>

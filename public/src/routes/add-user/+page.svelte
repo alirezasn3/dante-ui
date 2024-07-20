@@ -36,10 +36,12 @@
 		type="text"
 		placeholder="password"
 	/>
-	<button on:click={addUser} class="rounded border border-neutral-800 text-lg px-4 py-2"
-		>CREATE</button
-	>
-	<a href="/" class="rounded border border-neutral-800 text-lg px-4 py-2">BACK</a>
+	<div class="flex items-center">
+		<button on:click={addUser} class="mr-4 rounded border border-neutral-800 text-lg px-4 py-2"
+			>CREATE</button
+		>
+		<a href="/" class="rounded border border-neutral-800 text-lg px-4 py-2">BACK</a>
+	</div>
 	<div class="text-red-500">
 		{e}
 	</div>

@@ -25,6 +25,7 @@ var publicFS embed.FS
 
 type User struct {
 	Username     string `json:"username"`
+	Password     string `json:"password"`
 	TotalUsage   int64  `json:"totalUsage"`
 	AllowedUsage int64  `json:"allowedUsage"`
 	ExpiresAt    int64  `json:"expiresAt"`
@@ -38,25 +39,23 @@ type Users struct {
 	db    *badger.DB
 }
 
+type Config struct {
+	ListenAddress string `json:"listenAddress"`
+	PublicAddress string `json:"publicAddress"`
+}
+
 func (u *Users) GetUser(username string) (*User, error) {
-	user := &User{Username: username}
+	user := &User{}
 	err := u.db.Update(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(username))
 		if err != nil {
 			return err
 		}
 		return item.Value(func(val []byte) error {
-			parts := strings.Split(string(val), " ")
-			totalUsage, err := strconv.ParseInt(parts[0], 10, 64)
+			err := json.Unmarshal(val, user)
 			if err != nil {
 				return err
 			}
-			expiresAt, err := strconv.ParseInt(parts[1], 10, 64)
-			if err != nil {
-				return err
-			}
-			user.TotalUsage = totalUsage
-			user.ExpiresAt = expiresAt
 			return nil
 		})
 	})
@@ -66,9 +65,13 @@ func (u *Users) GetUser(username string) (*User, error) {
 	return user, nil
 }
 
-func (u *Users) SetUser(username string, totalUsage int64, expiresAt int64) error {
+func (u *Users) SetUser(user *User) error {
 	return u.db.Update(func(txn *badger.Txn) error {
-		return txn.Set([]byte(username), []byte(fmt.Sprintf("%d %d", totalUsage, expiresAt)))
+		bytes, err := json.Marshal(user)
+		if err != nil {
+			return err
+		}
+		return txn.Set([]byte(user.Username), bytes)
 	})
 }
 
@@ -99,6 +102,18 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	// load config file
+	var config Config
+	bytes, err := os.ReadFile(filepath.Join(filepath.Dir(execPath), "config.json"))
+	if err != nil {
+		panic(err)
+	}
+	err = json.Unmarshal(bytes, &config)
+	if err != nil {
+		panic(err)
+	}
+	log.Println("Loaded config from " + filepath.Join(filepath.Dir(execPath), "config.json"))
 
 	// open database
 	db, err := badger.Open(badger.DefaultOptions(filepath.Join(filepath.Dir(execPath), "badger")))
@@ -159,7 +174,8 @@ findGroupID:
 			if err != nil {
 				if err == badger.ErrKeyNotFound {
 					// create user on datebase if it doesn't exist
-					e := users.SetUser(username, 0, time.Now().Add(time.Hour*24*30).Unix())
+					user = &User{Username: username, ExpiresAt: time.Now().Add(time.Hour * 24 * 30).Unix(), AllowedUsage: 50 * 1024000000}
+					e := users.SetUser(user)
 					if e != nil {
 						panic(e)
 					}
@@ -184,7 +200,6 @@ findGroupID:
 
 			// add user to cache and map
 			users.cache = append(users.cache, username)
-			users.users[username] = &User{Username: username}
 		}
 	}
 
@@ -197,10 +212,10 @@ findGroupID:
 			t = time.Now().Unix()
 			for _, u := range users.users {
 				users.mu.RLock()
-				if e = users.SetUser(u.Username, u.TotalUsage, u.ExpiresAt); e != nil {
+				if e = users.SetUser(u); e != nil {
 					panic(e)
 				}
-				if u.ExpiresAt <= t && !u.Locked {
+				if (u.ExpiresAt <= t || u.TotalUsage >= u.AllowedUsage) && !u.Locked {
 					// lock user
 					_, e = exec.Command("passwd", "-q", "-l", u.Username).CombinedOutput()
 					if e != nil {
@@ -210,7 +225,7 @@ findGroupID:
 						log.Printf("Locked [%s]\n", u.Username)
 					}
 					lockStatusChanged = true
-				} else if u.Locked && u.ExpiresAt > t {
+				} else if u.Locked && (u.ExpiresAt > t && u.TotalUsage < u.AllowedUsage) {
 					// unlock user
 					_, e = exec.Command("passwd", "-q", "-u", u.Username).CombinedOutput()
 					if e != nil {
@@ -226,6 +241,7 @@ findGroupID:
 					users.mu.Lock()
 					u.Locked = !u.Locked
 					users.mu.Unlock()
+					lockStatusChanged = false
 				}
 			}
 			time.Sleep(time.Second * 30)
@@ -251,27 +267,39 @@ findGroupID:
 			e.StaticFS("/*", echo.MustSubFS(publicFS, "public/build"))
 		}
 
+		e.GET("/api/public-address", func(c echo.Context) error {
+			return c.String(200, config.PublicAddress)
+		})
+
 		e.GET("/api/users", func(c echo.Context) error {
 			users.mu.RLock()
 			defer users.mu.RUnlock()
 			return c.JSON(200, users.users)
 		})
 
-		e.POST("/api/users", func(c echo.Context) error {
-			var data struct {
-				Username string `json:"username"`
-				Password string `json:"password"`
+		e.GET("/api/users/:username", func(c echo.Context) error {
+			username := c.Param("username")
+			users.mu.RLock()
+			defer users.mu.RUnlock()
+			if user, ok := users.users[username]; ok {
+				return c.JSON(200, user)
+			} else {
+				return c.NoContent(404)
 			}
-			err := json.NewDecoder(c.Request().Body).Decode(&data)
+		})
+
+		e.POST("/api/users", func(c echo.Context) error {
+			user := &User{}
+			err := json.NewDecoder(c.Request().Body).Decode(user)
 			if err != nil {
 				return c.String(400, err.Error())
 			}
-			passwordBytes, err := exec.Command("openssl", "passwd", "-6", "-salt", "xyz", data.Password).CombinedOutput()
+			passwordBytes, err := exec.Command("openssl", "passwd", "-6", "-salt", "xyz", user.Password).CombinedOutput()
 			if err != nil {
 				log.Println(err)
 				return c.NoContent(500)
 			}
-			bytes, err := exec.Command("useradd", "-r", "-s", "/bin/false", "-p", strings.TrimSpace(string(passwordBytes)), data.Username).CombinedOutput()
+			bytes, err := exec.Command("useradd", "-r", "-s", "/bin/false", "-p", strings.TrimSpace(string(passwordBytes)), user.Username).CombinedOutput()
 			if err != nil {
 				if strings.Contains(string(bytes), "already exists") {
 					return c.NoContent(409)
@@ -279,27 +307,61 @@ findGroupID:
 				log.Println(err, string(bytes))
 				return c.NoContent(500)
 			}
-			expiresAt := time.Now().Add(time.Hour * 24 * 30).Unix()
-			if err = users.SetUser(data.Username, 0, expiresAt); err != nil {
+			user.ExpiresAt = time.Now().Add(time.Hour * 24 * 30).Unix()
+			user.AllowedUsage = 50 * 1024000000
+			if err = users.SetUser(user); err != nil {
 				panic(err)
 			}
 			users.mu.Lock()
-			users.cache = append(users.cache, data.Username)
-			users.users[data.Username] = &User{Username: data.Username, ExpiresAt: expiresAt}
+			users.users[user.Username] = user
+			users.cache = append(users.cache, user.Username)
 			users.mu.Unlock()
-			log.Printf("[%s] created\n", data.Username)
+			log.Printf("[%s] created\n", user.Username)
 			return c.NoContent(201)
 		})
 
-		e.DELETE("/api/users", func(c echo.Context) error {
-			var data struct {
-				Username string `json:"username"`
-			}
-			err := json.NewDecoder(c.Request().Body).Decode(&data)
+		e.PATCH("/api/users", func(c echo.Context) error {
+			var newUser map[string]interface{}
+			err := json.NewDecoder(c.Request().Body).Decode(&newUser)
 			if err != nil {
 				return c.String(400, err.Error())
 			}
-			bytes, err := exec.Command("userdel", data.Username).CombinedOutput()
+
+			// check if a username is supplied
+			if username, ok := newUser["username"]; ok {
+				users.mu.Lock()
+				defer users.mu.Unlock()
+				// check if the user exists in map
+				if oldUser, ok := users.users[username.(string)]; ok {
+					// check if there is a new allowedUsage value
+					if newAllowedUsage, ok := newUser["allowedUsage"]; ok {
+						oldUser.AllowedUsage = newAllowedUsage.(int64)
+					}
+					// check if there is a new expiresAt value
+					if newExpiresAt, ok := newUser["expiresAt"]; ok {
+						oldUser.ExpiresAt = newExpiresAt.(int64)
+					}
+					// check if there is a new totalUsage value
+					if totalUsageAt, ok := newUser["totalUsage"]; ok {
+						oldUser.ExpiresAt = totalUsageAt.(int64)
+					}
+				} else {
+					return c.NoContent(404)
+				}
+			} else {
+				return c.NoContent(400)
+			}
+
+			return c.NoContent(200)
+		})
+
+		e.DELETE("/api/users", func(c echo.Context) error {
+			user := &User{}
+			err := json.NewDecoder(c.Request().Body).Decode(&user)
+			if err != nil {
+				return c.String(400, err.Error())
+			}
+			bytes, err := exec.Command("userdel", user.Username).CombinedOutput()
 			if err != nil {
 				if strings.Contains(string(bytes), "does not exist") {
 					return c.NoContent(400)
@@ -307,20 +369,20 @@ findGroupID:
 				log.Println(err, string(bytes))
 				return c.NoContent(500)
 			}
-			if err = users.DeleteUser(data.Username); err != nil {
+			if err = users.DeleteUser(user.Username); err != nil {
 				panic(err)
 			}
 			users.mu.Lock()
 			users.cache = slices.DeleteFunc(users.cache, func(s string) bool {
-				return s == data.Username
+				return s == user.Username
 			})
-			delete(users.users, data.Username)
+			delete(users.users, user.Username)
 			users.mu.Unlock()
-			log.Printf("[%s] removed", data.Username)
+			log.Printf("[%s] removed", user.Username)
 			return c.NoContent(200)
 		})
 
-		e.Logger.Fatal(e.Start(":10800"))
+		e.Logger.Fatal(e.Start(config.ListenAddress))
 	}()
 
 	// read and parse dante log file
